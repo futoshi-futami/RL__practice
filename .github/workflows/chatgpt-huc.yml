@@ -4,11 +4,7 @@ on:
   pull_request:
     branches: [master]
     paths:
-      - chatgpt_tmp/trigger.txt
-      - .github/workflows/chatgpt-huc.yml
-  push:
-    branches: [master]
-    paths: [.github/workflows/chatgpt-huc.yml]
+      - chatgpt_tmp/**
   workflow_dispatch:
 
 permissions:
@@ -20,15 +16,31 @@ env:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - name: Create probe artifact
+      - uses: actions/checkout@v4
+      - name: Probe official BIOSCAN URLs
+        shell: bash
         run: |
+          set -uo pipefail
           mkdir -p out
-          python - <<'PY'
-          import json, platform
-          json.dump({'status':'ok','python':platform.python_version()}, open('out/probe.json','w'))
-          PY
+          report=out/probe.txt
+          : > "$report"
+          urls=(
+            "https://aspis.cmpt.sfu.ca/projects/bioscan/checkpoint/for_readme/ver_1_0/bioscan_5m/no_alignment/extracted_feature_from_test_split.hdf5"
+            "https://aspis.cmpt.sfu.ca/projects/bioscan/checkpoint/for_readme/ver_1_0/bioscan_5m/image_dna/extracted_feature_from_test_split.hdf5"
+            "https://aspis.cmpt.sfu.ca/projects/bioscan/checkpoint/for_readme/ver_1_0/bioscan_5m/image_dna_text/extracted_feature_from_test_split.hdf5"
+            "https://aspis.cmpt.sfu.ca/projects/bioscan/checkpoint/for_readme/ver_1_0/no_alignment/extracted_feature_from_test_split.hdf5"
+            "https://aspis.cmpt.sfu.ca/projects/bioscan/BIOSCAN_CLIP_for_downloading/INSECT_data/processed_data.zip"
+          )
+          for u in "${urls[@]}"; do
+            echo "===== $u =====" | tee -a "$report"
+            curl -L -sS -I --max-time 120 "$u" 2>&1 | tee -a "$report" || true
+            rm -f /tmp/probe.bin
+            curl -L -sS --max-time 120 -r 0-1048575 "$u" -o /tmp/probe.bin 2>&1 | tee -a "$report" || true
+            echo "range_bytes=$(wc -c < /tmp/probe.bin 2>/dev/null || echo 0)" | tee -a "$report"
+            file /tmp/probe.bin 2>&1 | tee -a "$report" || true
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: chatgpt-huc-probe
