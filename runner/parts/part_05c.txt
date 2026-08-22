@@ -1,0 +1,52 @@
+            history_dir = root / "histories" / f"seed_{seed}" / base_name
+            history_dir.mkdir(parents=True, exist_ok=True)
+            for start_name, start_probs in starts.items():
+                for second_method in ("UC", "C-HUC"):
+                    composed_name = f"{start_name}→{second_method}"
+                    fit_start = time.time()
+                    rules, history = fit_booster(
+                        second_method,
+                        start_probs["stage2"], y["stage2"],
+                        start_probs["validation"], y["validation"],
+                        group_sets["stage2"], group_sets["validation"], tree,
+                        max_rounds=args.max_rounds, patience=args.patience, epsilon=1e-8,
+                    )
+                    probability_outputs[composed_name] = apply_rules(
+                        start_probs["test"], group_sets["test"], tree, rules
+                    )
+                    history.to_csv(history_dir / f"{composed_name.replace('→', '_to_')}.csv", index=False)
+                    (history_dir / f"{composed_name.replace('→', '_to_')}_rules.json").write_text(
+                        json.dumps([r.to_dict() for r in rules], ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+                    parameter_rows.append({
+                        "seed": seed,
+                        "base_model": base_name,
+                        "method": composed_name,
+                        "n_rules": len(rules),
+                        "fit_seconds": time.time() - fit_start,
+                        "best_validation_objective": float(history.attrs.get("best_validation_objective", np.nan)),
+                        "initial_validation_objective": float(history.attrs.get("initial_validation_objective", np.nan)),
+                    })
+                    print(f"  {composed_name}: rules={len(rules)}", flush=True)
+
+            if set(probability_outputs) != set(methods):
+                raise AssertionError((set(probability_outputs), set(methods)))
+            for method in methods:
+                metrics = evaluate_all(
+                    probability_outputs[method], y["test"], group_sets["test"], tree
+                )
+                rows.append({
+                    "seed": seed,
+                    "base_model": base_name,
+                    "method": method,
+                    "n_train": len(split["train"]),
+                    "n_stage1": len(split["stage1"]),
+                    "n_stage2": len(split["stage2"]),
+                    "n_validation": len(split["validation"]),
+                    "n_test": len(split["test"]),
+                    **metrics,
+                })
+            pd.DataFrame(rows).to_csv(root / "results_all.csv", index=False)
+            pd.DataFrame(parameter_rows).to_csv(root / "parameters_all.csv", index=False)
+            print(f"Completed seed {seed} base {base_name} in {time.time() - cell_start:.1f}s", flush=True)
+

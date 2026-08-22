@@ -1,0 +1,100 @@
+        # Every requested decision rank must cover all leaves exactly once.
+        for rank in RANKS:
+            nodes = self.rank_nodes[rank]
+            cover = self.leaf_mask[nodes].sum(axis=0)
+            if not np.all(cover == 1.0):
+                raise AssertionError(f"rank {rank} does not partition selected leaves: {cover}")
+
+    def masses(self, probs: np.ndarray) -> np.ndarray:
+        return np.asarray(probs, dtype=np.float64) @ self.leaf_mask.T
+
+    def path(self, node_index: int) -> List[int]:
+        return self.path_cache[node_index]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "nodes": [dataclasses.asdict(n) for n in self.nodes],
+            "leaf_nodes": self.leaf_nodes,
+            "class_names": self.class_names,
+            "internal_nodes": self.internal_nodes,
+        }
+
+
+@dataclass
+class UtilityState:
+    rank: str
+    actions: np.ndarray
+    scores: np.ndarray
+    outcomes: np.ndarray
+    residuals: np.ndarray
+    node_residuals: np.ndarray
+    masses: np.ndarray
+    decomposition_error: float
+
+
+def compute_utility_state(probs: np.ndarray, labels: np.ndarray, tree: TaxonomyTree, rank: str) -> UtilityState:
+    probs = ensure_probabilities(probs)
+    labels = np.asarray(labels, dtype=np.int64)
+    masses = tree.masses(probs)
+    candidates = np.asarray(tree.rank_nodes[rank], dtype=np.int64)
+    local = np.argmax(masses[:, candidates], axis=1)
+    actions = candidates[local]
+    scores = masses[np.arange(len(probs)), actions]
+    outcomes = tree.leaf_mask[actions, labels]
+    residuals = outcomes - scores
+    node_residuals = np.zeros((len(probs), len(tree.internal_nodes)), dtype=np.float64)
+
+    for action in np.unique(actions):
+        sample_indices = np.flatnonzero(actions == action)
+        action_mass = masses[sample_indices, action]
+        path = tree.path(int(action))
+        for parent, child in zip(path[:-1], path[1:]):
+            if parent not in tree.internal_position:
+                raise AssertionError("a non-internal node appeared as a path parent")
+            parent_mass = masses[sample_indices, parent]
+            child_mass = masses[sample_indices, child]
+            if np.any(child_mass <= 0) or np.any(parent_mass <= 0):
+                raise AssertionError("selected action path has zero mass")
+            q = child_mass / parent_mass
+            multiplier = action_mass / child_mass
+            indicator_child = tree.leaf_mask[child, labels[sample_indices]]
+            indicator_parent = tree.leaf_mask[parent, labels[sample_indices]]
+            contribution = multiplier * (indicator_child - q * indicator_parent)
+            node_residuals[sample_indices, tree.internal_position[parent]] = contribution
+
+    error = float(np.max(np.abs(residuals - node_residuals.sum(axis=1))))
+    if error > 5e-10:
+        raise AssertionError(f"utility decomposition failed for {rank}: {error}")
+    return UtilityState(rank, actions, scores, outcomes, residuals, node_residuals, masses, error)
+
+
+def rule_direction(state: UtilityState, tree: TaxonomyTree, node_index: Optional[int]) -> Tuple[np.ndarray, np.ndarray]:
+    n = len(state.actions)
+    k = tree.num_leaves
+    direction = np.zeros((n, k), dtype=np.float64)
+    active = np.zeros(n, dtype=bool)
+    if node_index is None:
+        for action in np.unique(state.actions):
+            rows = np.flatnonzero(state.actions == action)
+            direction[rows] = tree.leaf_mask[action]
+            active[rows] = True
+        return direction, active
+
+    for action in np.unique(state.actions):
+        path = tree.path(int(action))
+        if node_index not in path[:-1]:
+            continue
+        j = path.index(node_index)
+        child = path[j + 1]
+        rows = np.flatnonzero(state.actions == action)
+        parent_mass = state.masses[rows, node_index]
+        child_mass = state.masses[rows, child]
+        action_mass = state.masses[rows, action]
+        q = child_mass / parent_mass
+        multiplier = action_mass / child_mass
+        direction[rows] = multiplier[:, None] * (
+            tree.leaf_mask[child][None, :] - q[:, None] * tree.leaf_mask[node_index][None, :]
+        )
+        active[rows] = True
+    return direction, active
+

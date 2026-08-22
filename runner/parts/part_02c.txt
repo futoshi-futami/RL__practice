@@ -1,0 +1,77 @@
+@dataclass
+class GroupSpec:
+    brightness_median: float
+    contrast_median: float
+
+
+def make_group_spec(train_stats: Mapping[str, np.ndarray]) -> GroupSpec:
+    return GroupSpec(
+        brightness_median=float(np.median(train_stats["brightness"])),
+        contrast_median=float(np.median(train_stats["contrast"])),
+    )
+
+
+def group_masks(stats: Mapping[str, np.ndarray], spec: GroupSpec) -> Dict[str, np.ndarray]:
+    brightness = np.asarray(stats["brightness"], dtype=np.float64)
+    contrast = np.asarray(stats["contrast"], dtype=np.float64)
+    aspect = np.asarray(stats["aspect"], dtype=np.float64)
+    return {
+        "all": np.ones(len(brightness), dtype=bool),
+        "dark": brightness <= spec.brightness_median,
+        "bright": brightness > spec.brightness_median,
+        "low_contrast": contrast <= spec.contrast_median,
+        "high_contrast": contrast > spec.contrast_median,
+        "portrait": aspect < 1.0,
+        "landscape": aspect >= 1.0,
+    }
+
+
+@dataclass
+class Candidate:
+    score: float
+    signed_moment: float
+    utility_rank: str
+    group: str
+    lower: float
+    upper: float
+    support: int
+    node_index: Optional[int]
+
+
+@dataclass
+class Rule:
+    utility_rank: str
+    group: str
+    lower: float
+    upper: float
+    node_index: Optional[int]
+    sign: float
+    step: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+def candidate_sort_key(candidate: Candidate) -> Tuple[float, int, str, int, float, float]:
+    utility_order = {r: i for i, r in enumerate(RANKS)}
+    return (
+        -candidate.score,
+        utility_order[candidate.utility_rank],
+        candidate.group,
+        -1 if candidate.node_index is None else candidate.node_index,
+        candidate.lower,
+        candidate.upper,
+    )
+
+
+def find_candidate(
+    method: str,
+    probs: np.ndarray,
+    labels: np.ndarray,
+    groups: Mapping[str, np.ndarray],
+    tree: TaxonomyTree,
+) -> Tuple[Candidate, Dict[str, UtilityState]]:
+    states = {rank: compute_utility_state(probs, labels, tree, rank) for rank in RANKS}
+    candidates: List[Candidate] = []
+    selected_groups = ["all"] if method == "UC" else list(groups.keys())
+    for rank in RANKS:

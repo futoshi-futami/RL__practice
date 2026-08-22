@@ -1,0 +1,118 @@
+def fit_booster(
+    method: str,
+    correction_probs: np.ndarray,
+    correction_labels: np.ndarray,
+    validation_probs: np.ndarray,
+    validation_labels: np.ndarray,
+    correction_groups: Mapping[str, np.ndarray],
+    validation_groups: Mapping[str, np.ndarray],
+    tree: TaxonomyTree,
+    max_rounds: int = 100,
+    patience: int = 12,
+    epsilon: float = 1e-8,
+) -> Tuple[List[Rule], pd.DataFrame]:
+    current = ensure_probabilities(correction_probs).copy()
+    validation_current = ensure_probabilities(validation_probs).copy()
+    best_rules: List[Rule] = []
+    rules: List[Rule] = []
+    best_objective = evaluate_target(method, validation_current, validation_labels, validation_groups, tree)
+    initial_objective = best_objective
+    no_improvement = 0
+    history: List[Dict[str, Any]] = [{
+        "round": 0,
+        "validation_objective": best_objective,
+        "correction_objective": evaluate_target(method, current, correction_labels, correction_groups, tree),
+        "selected": False,
+        "best_so_far": True,
+    }]
+
+    for round_index in range(1, max_rounds + 1):
+        candidate, _ = find_candidate(method, current, correction_labels, correction_groups, tree)
+        if candidate.score <= epsilon:
+            history.append({"round": round_index, "stop_reason": "epsilon", "correction_objective": candidate.score})
+            break
+        proposed, rule, update_info = armijo_update(
+            current, correction_labels, correction_groups, tree, candidate,
+            initial_step=0.5, shrink=0.7, c1=1e-4, max_backtracks=100,
+        )
+        if proposed is None or rule is None:
+            history.append({
+                "round": round_index,
+                "stop_reason": "armijo_failed",
+                "correction_objective": candidate.score,
+                **update_info,
+            })
+            break
+        current = proposed
+        rules.append(rule)
+        validation_current = apply_rule(validation_current, validation_groups, tree, rule)
+        validation_objective = evaluate_target(method, validation_current, validation_labels, validation_groups, tree)
+        improved = validation_objective < best_objective - 1e-12
+        if improved:
+            best_objective = validation_objective
+            best_rules = list(rules)
+            no_improvement = 0
+        else:
+            no_improvement += 1
+        history.append({
+            "round": round_index,
+            "method": method,
+            "utility_rank": candidate.utility_rank,
+            "group": candidate.group,
+            "node_index": candidate.node_index,
+            "node_name": None if candidate.node_index is None else tree.nodes[candidate.node_index].path_key,
+            "lower": candidate.lower,
+            "upper": candidate.upper,
+            "support": candidate.support,
+            "signed_moment": candidate.signed_moment,
+            "correction_objective": candidate.score,
+            "validation_objective": validation_objective,
+            "best_so_far": improved,
+            **update_info,
+        })
+        if no_improvement >= patience:
+            history.append({"round": round_index, "stop_reason": "validation_patience"})
+            break
+    frame = pd.DataFrame(history)
+    frame.attrs["initial_validation_objective"] = initial_objective
+    frame.attrs["best_validation_objective"] = best_objective
+    frame.attrs["best_round"] = len(best_rules)
+    frame.attrs["rounds_run"] = len(rules)
+    return best_rules, frame
+
+
+def fit_temperature(probs: np.ndarray, labels: np.ndarray) -> float:
+    logp = np.log(np.maximum(ensure_probabilities(probs), 1e-300))
+    labels = np.asarray(labels, dtype=np.int64)
+
+    def objective(log_temperature: float) -> float:
+        temperature = float(np.exp(log_temperature))
+        q = stable_softmax(logp / temperature)
+        return multiclass_nll(q, labels)
+
+    result = minimize_scalar(objective, bounds=(-4.0, 4.0), method="bounded", options={"xatol": 1e-6})
+    if not result.success:
+        raise RuntimeError(f"temperature optimization failed: {result}")
+    return float(np.exp(result.x))
+
+
+def transform_temperature(probs: np.ndarray, temperature: float) -> np.ndarray:
+    return stable_softmax(np.log(np.maximum(ensure_probabilities(probs), 1e-300)) / temperature)
+
+
+@dataclass
+class DirichletState:
+    model: LogisticRegression
+    num_classes: int
+
+    def apply(self, probs: np.ndarray) -> np.ndarray:
+        logp = np.log(np.maximum(ensure_probabilities(probs), 1e-300))
+        q = self.model.predict_proba(logp)
+        result = np.full((len(q), self.num_classes), 1e-15, dtype=np.float64)
+        result[:, self.model.classes_.astype(int)] = q
+        return ensure_probabilities(result)
+
+
+def fit_dirichlet(probs: np.ndarray, labels: np.ndarray, seed: int) -> DirichletState:
+    probs = ensure_probabilities(probs)
+    labels = np.asarray(labels, dtype=np.int64)

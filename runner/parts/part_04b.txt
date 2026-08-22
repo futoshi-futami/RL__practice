@@ -1,0 +1,67 @@
+def evaluate_all(
+    probs: np.ndarray,
+    labels: np.ndarray,
+    groups: Mapping[str, np.ndarray],
+    tree: TaxonomyTree,
+) -> Dict[str, float]:
+    probs = ensure_probabilities(probs)
+    labels = np.asarray(labels, dtype=np.int64)
+    n = len(labels)
+    uc = 0.0
+    c_uc = 0.0
+    huc = 0.0
+    c_huc = 0.0
+    max_decomp = 0.0
+    rank_errors: Dict[str, float] = {}
+    for rank in RANKS:
+        state = compute_utility_state(probs, labels, tree, rank)
+        max_decomp = max(max_decomp, state.decomposition_error)
+        rank_errors[f"{rank}_error"] = float(1.0 - np.mean(state.outcomes))
+        for group_name, group in groups.items():
+            total_result = exact_worst_intervals(
+                state.scores, state.residuals[:, None], group, normalizer=n
+            )[0]
+            node_results = exact_worst_intervals(
+                state.scores, state.node_residuals, group, normalizer=n
+            )
+            node_score = max(x.score for x in node_results)
+            c_uc = max(c_uc, total_result.score)
+            c_huc = max(c_huc, node_score)
+            if group_name == "all":
+                uc = max(uc, total_result.score)
+                huc = max(huc, node_score)
+    result: Dict[str, float] = {
+        "MC": exact_mc(probs, labels),
+        "UC": float(uc),
+        "C-UC": float(c_uc),
+        "HUC": float(huc),
+        "C-HUC": float(c_huc),
+        "Brier": multiclass_brier(probs, labels),
+        "NLL": multiclass_nll(probs, labels),
+        "Accuracy": float(np.mean(np.argmax(probs, axis=1) == labels)),
+        "AUC": macro_auc(probs, labels),
+        "decomposition_error": max_decomp,
+        "probability_sum_error": float(np.max(np.abs(probs.sum(axis=1) - 1.0))),
+        "minimum_probability": float(np.min(probs)),
+    }
+    result.update(rank_errors)
+    return result
+
+
+def summarize_results(frame: pd.DataFrame) -> pd.DataFrame:
+    metric_columns = [
+        "MC", "UC", "C-UC", "HUC", "C-HUC", "Brier", "NLL", "Accuracy", "AUC",
+        "class_error", "order_error", "family_error", "genus_error", "species_error",
+    ]
+    rows: List[Dict[str, Any]] = []
+    method_order = list(dict.fromkeys(frame["method"].tolist()))
+    for method in method_order:
+        part = frame[frame["method"] == method]
+        row: Dict[str, Any] = {"method": method, "n": len(part)}
+        for metric in metric_columns:
+            row[f"{metric}_mean"] = float(part[metric].mean())
+            row[f"{metric}_std"] = float(part[metric].std(ddof=1))
+            row[f"{metric}_display"] = f"{row[f'{metric}_mean']:.6f} ± {row[f'{metric}_std']:.6f}"
+        rows.append(row)
+    return pd.DataFrame(rows)
+
