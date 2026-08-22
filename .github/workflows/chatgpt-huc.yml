@@ -5,55 +5,67 @@ on:
     branches: [master]
     paths:
       - chatgpt_tmp/**
+      - runner/**
+      - .github/workflows/chatgpt-huc.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
-  PYTHONUNBUFFERED: '1'
+  PYTHONUNBUFFERED: "1"
+  OMP_NUM_THREADS: "2"
+  MKL_NUM_THREADS: "2"
+  OPENBLAS_NUM_THREADS: "2"
+  NUMEXPR_NUM_THREADS: "2"
 
 jobs:
-  inspect:
+  run:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
-      - name: Download official BIOSCAN-1M embedding file
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p work out
-          url="https://aspis.cmpt.sfu.ca/projects/bioscan/checkpoint/for_readme/ver_1_0/no_alignment/extracted_feature_from_test_split.hdf5"
-          curl -L --fail --retry 5 --retry-delay 5 --connect-timeout 30 "$url" -o work/bioscan_test.hdf5
-          ls -lh work/bioscan_test.hdf5 | tee out/download.txt
-          sha256sum work/bioscan_test.hdf5 >> out/download.txt
-      - name: Inspect HDF5 recursively
-        shell: bash
-        run: |
-          python - <<'PY'
-          import h5py, json, os
-          p='work/bioscan_test.hdf5'
-          info={'path':p,'size_bytes':os.path.getsize(p),'objects':{}}
-          with h5py.File(p,'r') as f:
-              def visit(name,obj):
-                  row={'type':'group' if isinstance(obj,h5py.Group) else 'dataset'}
-                  if isinstance(obj,h5py.Dataset):
-                      row.update(shape=list(obj.shape), dtype=str(obj.dtype), chunks=list(obj.chunks) if obj.chunks else None, compression=obj.compression)
-                      if obj.ndim>=1 and obj.shape[0]>0:
-                          try:
-                              sample=obj[0]
-                              if hasattr(sample,'tolist'): sample=sample.tolist()
-                              if isinstance(sample,bytes): sample=sample.decode('utf-8','replace')
-                              row['sample0']=str(sample)[:500]
-                          except Exception as e: row['sample_error']=repr(e)
-                  info['objects'][name]=row
-              f.visititems(visit)
-          json.dump(info,open('out/schema.json','w'),indent=2,ensure_ascii=False)
-          print(json.dumps(info,indent=2,ensure_ascii=False)[:20000])
-          PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/setup-python@v5
         with:
-          name: chatgpt-bioscan-schema
-          path: out
-          retention-days: 1
+          python-version: "3.11"
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas scipy scikit-learn pillow requests xgboost tabulate matplotlib openpyxl
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - name: Assemble and test program
+        run: |
+          cat runner/parts/part_*.txt > runner/run_inat_composition.py
+          python -m py_compile runner/run_inat_composition.py
+          python runner/run_inat_composition.py --output outputs/self_test --self-test-only
+      - name: Run full real-image comparison
+        id: experiment
+        continue-on-error: true
+        run: |
+          mkdir -p outputs/inat_compositions
+          python runner/run_inat_composition.py \
+            --output outputs/inat_compositions \
+            --images-per-species 100 \
+            --seeds 20260819 20260820 20260821 20260822 20260823 \
+            --max-rounds 100 \
+            --patience 12 \
+            2>&1 | tee outputs/inat_compositions/console.log
+      - name: Package outputs
+        if: always()
+        run: |
+          tar -czf inat_huc_complete_rerun.tar.gz outputs runner/run_inat_composition.py
+          ls -lh inat_huc_complete_rerun.tar.gz
+          cat outputs/inat_compositions/STATUS.json || true
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inat-huc-complete-rerun
+          path: |
+            inat_huc_complete_rerun.tar.gz
+            outputs
+            runner/run_inat_composition.py
+          retention-days: 30
+      - name: Fail if experiment failed
+        if: steps.experiment.outcome != 'success'
+        run: exit 1
