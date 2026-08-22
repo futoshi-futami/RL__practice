@@ -5,6 +5,12 @@ on:
     branches: [master]
     paths:
       - '.github/workflows/chatgpt-huc.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'chatgpt_tmp/**'
+      - 'runner/**'
+      - '.github/workflows/chatgpt-huc.yml'
   workflow_dispatch:
 
 permissions:
