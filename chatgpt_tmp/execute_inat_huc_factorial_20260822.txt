@@ -1,0 +1,1 @@
+Execute the complete real-image HUC factorial comparison: Raw, Temperature, Dirichlet, and each followed by UC or C-HUC; five seeds and six base learners.
