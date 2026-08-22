@@ -1,0 +1,1 @@
+https://api.inaturalist.org/v1/observations?taxon_name=Amanita&quality_grade=research&photos=true&per_page=1
