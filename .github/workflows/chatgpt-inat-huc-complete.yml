@@ -2,9 +2,8 @@ name: Complete iNaturalist HUC composition rerun
 
 on:
   push:
-    branches: ["agent/inat-huc-complete-rerun"]
-  pull_request:
-    branches: [master]
+    branches: ["agent/inat-huc-complete-rerun-2"]
+  workflow_dispatch:
 
 permissions:
   contents: read
