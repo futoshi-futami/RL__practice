@@ -1,0 +1,69 @@
+name: Complete iNaturalist HUC composition rerun
+
+on:
+  push:
+    branches: ["agent/inat-huc-complete-rerun"]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  OMP_NUM_THREADS: "2"
+  MKL_NUM_THREADS: "2"
+  OPENBLAS_NUM_THREADS: "2"
+  NUMEXPR_NUM_THREADS: "2"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas scipy scikit-learn pillow requests xgboost tabulate matplotlib openpyxl
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - name: Assemble and test program
+        run: |
+          mkdir -p runner
+          cat runner/parts/part_*.txt > runner/run_inat_composition.py
+          python -m py_compile runner/run_inat_composition.py
+          python runner/run_inat_composition.py --output outputs/self_test --self-test-only
+      - name: Run full real-image comparison
+        id: experiment
+        continue-on-error: true
+        run: |
+          mkdir -p outputs/inat_compositions
+          python runner/run_inat_composition.py \
+            --output outputs/inat_compositions \
+            --images-per-species 100 \
+            --seeds 20260819 20260820 20260821 20260822 20260823 \
+            --max-rounds 100 \
+            --patience 12 \
+            2>&1 | tee outputs/inat_compositions/console.log
+      - name: Package outputs
+        if: always()
+        run: |
+          tar -czf inat_huc_complete_rerun.tar.gz outputs runner/run_inat_composition.py
+          ls -lh inat_huc_complete_rerun.tar.gz
+          cat outputs/inat_compositions/STATUS.json || true
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inat-huc-complete-rerun
+          path: |
+            inat_huc_complete_rerun.tar.gz
+            outputs
+            runner/run_inat_composition.py
+          retention-days: 30
+      - name: Fail if experiment failed
+        if: steps.experiment.outcome != 'success'
+        run: exit 1

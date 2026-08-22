@@ -1,0 +1,32 @@
+def run_self_test() -> Dict[str, Any]:
+    taxonomy = []
+    leaves = [
+        ("Animalia", "Chordata", "Amphibia", "Anura", "Ranidae", "Lithobates", "Lithobates a"),
+        ("Animalia", "Chordata", "Amphibia", "Anura", "Ranidae", "Lithobates", "Lithobates b"),
+        ("Fungi", "Basidiomycota", "Agaricomycetes", "Agaricales", "Amanitaceae", "Amanita", "Amanita a"),
+        ("Fungi", "Basidiomycota", "Agaricomycetes", "Agaricales", "Amanitaceae", "Amanita", "Amanita b"),
+    ]
+    for names in leaves:
+        taxonomy.append([
+            {"rank": rank, "name": name, "id": i}
+            for i, (rank, name) in enumerate(zip(TAXONOMIC_RANK_ORDER, names), start=1)
+        ])
+    tree = TaxonomyTree(taxonomy)
+    rng = np.random.default_rng(4)
+    p = rng.dirichlet(np.ones(4), size=80)
+    y = rng.integers(0, 4, size=80)
+    for rank in RANKS:
+        state = compute_utility_state(p, y, tree, rank)
+        if state.decomposition_error > 1e-10:
+            raise AssertionError(state.decomposition_error)
+    scores = np.array([0.1, 0.1, 0.2, 0.3, 0.3, 0.4])
+    residual = np.array([0.2, -0.1, -0.4, 0.5, -0.1, 0.2])
+    support = np.ones(len(scores), dtype=bool)
+    exact = exact_worst_intervals(scores, residual[:, None], support, len(scores))[0]
+    brute = brute_force_interval(scores, residual, support, len(scores))
+    if abs(exact.score - brute.score) > 1e-12:
+        raise AssertionError((exact, brute))
+    projected = project_simplex_rows(rng.normal(size=(100, 11)))
+    if np.max(np.abs(projected.sum(axis=1) - 1)) > 1e-12 or np.min(projected) < -1e-12:
+        raise AssertionError("projection self-test failed")
+    stats = {"brightness": rng.random(80), "contrast": rng.random(80), "aspect": rng.uniform(0.5, 1.5, 80)}

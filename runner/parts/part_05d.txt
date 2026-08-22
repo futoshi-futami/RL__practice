@@ -1,0 +1,43 @@
+    frame = pd.DataFrame(rows)
+    summary = summarize_results(frame)
+    comparisons = paired_comparisons(frame)
+    by_base = (
+        frame.groupby(["base_model", "method"])[
+            ["MC", "UC", "C-UC", "HUC", "C-HUC", "Brier", "NLL", "Accuracy", "AUC", "species_error"]
+        ]
+        .agg(["mean", "std"])
+        .reset_index()
+    )
+    by_base.columns = ["_".join(x).rstrip("_") for x in by_base.columns.to_flat_index()]
+
+    summary.to_csv(root / "summary.csv", index=False)
+    comparisons.to_csv(root / "paired_comparisons.csv", index=False)
+    by_base.to_csv(root / "summary_by_base_model.csv", index=False)
+
+    validation = {
+        "status": "success",
+        "n_rows": len(frame),
+        "expected_rows": len(args.seeds) * len(base_models) * len(methods),
+        "n_seeds": len(args.seeds),
+        "n_base_models": len(base_models),
+        "n_methods": len(methods),
+        "images": len(manifest),
+        "species": tree.num_leaves,
+        "tree_nodes": tree.num_nodes,
+        "tree_internal_nodes": len(tree.internal_nodes),
+        "maximum_decomposition_error": float(frame["decomposition_error"].max()),
+        "maximum_probability_sum_error": float(frame["probability_sum_error"].max()),
+        "minimum_probability": float(frame["minimum_probability"].min()),
+        "total_seconds": time.time() - total_start,
+        "data_source": "public iNaturalist API research-grade observations; fresh real-image rerun",
+        "method_design": "separate 45/15/15/10/15 train/stage1/stage2/validation/test split per species",
+        "projected_methods": "exact tie-preserving closed intervals; exact Euclidean simplex projection; projected-Brier Armijo step 0.5/0.7/1e-4; validation prefix",
+    }
+    if validation["n_rows"] != validation["expected_rows"]:
+        raise AssertionError(validation)
+    if validation["maximum_decomposition_error"] > 5e-9:
+        raise AssertionError(validation)
+    if validation["maximum_probability_sum_error"] > 5e-10:
+        raise AssertionError(validation)
+    (root / "VALIDATION.json").write_text(json.dumps(validation, ensure_ascii=False, indent=2), encoding="utf-8")
+
