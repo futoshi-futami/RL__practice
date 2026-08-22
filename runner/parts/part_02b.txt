@@ -1,0 +1,81 @@
+@dataclass
+class IntervalResult:
+    score: float
+    signed_moment: float
+    lower: float
+    upper: float
+    support: int
+    column: int
+
+
+def exact_worst_intervals(scores: np.ndarray, residual_matrix: np.ndarray, support_mask: np.ndarray, normalizer: int) -> List[IntervalResult]:
+    scores = np.asarray(scores, dtype=np.float64)
+    residual_matrix = np.asarray(residual_matrix, dtype=np.float64)
+    if residual_matrix.ndim == 1:
+        residual_matrix = residual_matrix[:, None]
+    support_mask = np.asarray(support_mask, dtype=bool)
+    if not np.any(support_mask):
+        return [IntervalResult(0.0, 0.0, 0.0, 0.0, 0, j) for j in range(residual_matrix.shape[1])]
+    indices = np.flatnonzero(support_mask)
+    order = np.argsort(scores[indices], kind="mergesort")
+    indices = indices[order]
+    sorted_scores = scores[indices]
+    sorted_residuals = residual_matrix[indices]
+    unique_scores, first = np.unique(sorted_scores, return_index=True)
+    block_residuals = np.add.reduceat(sorted_residuals, first, axis=0)
+    block_counts = np.diff(np.append(first, len(sorted_scores)))
+    results: List[IntervalResult] = []
+
+    for column in range(block_residuals.shape[1]):
+        values = block_residuals[:, column]
+        best_abs = -1.0
+        best_signed = 0.0
+        best_l = 0
+        best_r = 0
+        # Maximum-sum contiguous interval.
+        current = 0.0
+        start = 0
+        for i, value in enumerate(values):
+            if current + value < value:
+                current = float(value)
+                start = i
+            else:
+                current += float(value)
+            candidate_abs = abs(current)
+            if candidate_abs > best_abs + 1e-15:
+                best_abs, best_signed, best_l, best_r = candidate_abs, current, start, i
+        # Minimum-sum contiguous interval, needed because the largest absolute sum may be negative.
+        current = 0.0
+        start = 0
+        for i, value in enumerate(values):
+            if current + value > value:
+                current = float(value)
+                start = i
+            else:
+                current += float(value)
+            candidate_abs = abs(current)
+            if candidate_abs > best_abs + 1e-15:
+                best_abs, best_signed, best_l, best_r = candidate_abs, current, start, i
+        support = int(block_counts[best_l:best_r + 1].sum())
+        results.append(IntervalResult(
+            score=float(best_abs / normalizer),
+            signed_moment=float(best_signed / normalizer),
+            lower=float(unique_scores[best_l]),
+            upper=float(unique_scores[best_r]),
+            support=support,
+            column=column,
+        ))
+    return results
+
+
+def brute_force_interval(scores: np.ndarray, residuals: np.ndarray, support: np.ndarray, normalizer: int) -> IntervalResult:
+    unique = np.unique(scores[support])
+    best = IntervalResult(-1.0, 0.0, 0.0, 0.0, 0, 0)
+    for i, lower in enumerate(unique):
+        for upper in unique[i:]:
+            mask = support & (scores >= lower) & (scores <= upper)
+            signed = float(np.sum(residuals[mask]) / normalizer)
+            if abs(signed) > best.score + 1e-15:
+                best = IntervalResult(abs(signed), signed, float(lower), float(upper), int(mask.sum()), 0)
+    return best
+

@@ -1,13 +1,10 @@
-name: Temporary HUC execution
+name: Complete iNaturalist HUC composition rerun
 
 on:
+  push:
+    branches: ["agent/inat-huc-complete-rerun"]
   pull_request:
     branches: [master]
-    paths:
-      - chatgpt_tmp/**
-      - runner/**
-      - .github/workflows/chatgpt-huc.yml
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -35,6 +32,7 @@ jobs:
           python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
       - name: Assemble and test program
         run: |
+          mkdir -p runner
           cat runner/parts/part_*.txt > runner/run_inat_composition.py
           python -m py_compile runner/run_inat_composition.py
           python runner/run_inat_composition.py --output outputs/self_test --self-test-only

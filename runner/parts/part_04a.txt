@@ -1,0 +1,106 @@
+    logp = np.log(np.maximum(probs, 1e-300))
+    # Full multinomial map on log probabilities. C=0.1 matches the prior pilot configuration.
+    model = LogisticRegression(
+        C=0.1,
+        penalty="l2",
+        solver="lbfgs",
+        max_iter=1500,
+        tol=1e-8,
+        random_state=seed,
+    )
+    model.fit(logp, labels)
+    return DirichletState(model=model, num_classes=probs.shape[1])
+
+
+def complete_probabilities(model: Any, x: np.ndarray, num_classes: int) -> np.ndarray:
+    q = model.predict_proba(x)
+    result = np.full((len(q), num_classes), 1e-15, dtype=np.float64)
+    result[:, np.asarray(model.classes_, dtype=np.int64)] = q
+    return ensure_probabilities(result)
+
+
+def build_base_model(name: str, seed: int) -> Any:
+    if name == "LR":
+        return Pipeline([
+            ("scale", StandardScaler()),
+            ("model", LogisticRegression(C=1.0, max_iter=1500, tol=1e-7, solver="lbfgs", random_state=seed)),
+        ])
+    if name == "GNB":
+        return GaussianNB(var_smoothing=1e-9)
+    if name == "DT":
+        return DecisionTreeClassifier(min_samples_leaf=2, random_state=seed)
+    if name == "RF":
+        return RandomForestClassifier(n_estimators=250, min_samples_leaf=1, n_jobs=2, random_state=seed)
+    if name == "XGB":
+        try:
+            from xgboost import XGBClassifier
+        except Exception as exc:
+            raise RuntimeError("xgboost is required for the XGB base learner") from exc
+        return XGBClassifier(
+            n_estimators=180,
+            max_depth=6,
+            learning_rate=0.05,
+            subsample=0.85,
+            colsample_bytree=0.85,
+            objective="multi:softprob",
+            eval_metric="mlogloss",
+            n_jobs=2,
+            random_state=seed,
+            reg_lambda=1.0,
+        )
+    if name == "MLP":
+        return Pipeline([
+            ("scale", StandardScaler()),
+            ("model", MLPClassifier(
+                hidden_layer_sizes=(256,),
+                alpha=1e-4,
+                batch_size=128,
+                learning_rate_init=1e-3,
+                early_stopping=True,
+                validation_fraction=0.15,
+                n_iter_no_change=15,
+                max_iter=350,
+                random_state=seed,
+            )),
+        ])
+    raise ValueError(name)
+
+
+def split_indices(labels: np.ndarray, seed: int) -> Dict[str, np.ndarray]:
+    labels = np.asarray(labels, dtype=np.int64)
+    rng = np.random.default_rng(seed)
+    parts: Dict[str, List[int]] = {k: [] for k in ("train", "stage1", "stage2", "validation", "test")}
+    for label in np.unique(labels):
+        indices = np.flatnonzero(labels == label)
+        rng.shuffle(indices)
+        n = len(indices)
+        # The acquisition target is 100/class. This also works if a cached run has a different count.
+        counts = {
+            "train": int(math.floor(0.45 * n)),
+            "stage1": int(math.floor(0.15 * n)),
+            "stage2": int(math.floor(0.15 * n)),
+            "validation": int(math.floor(0.10 * n)),
+        }
+        used = sum(counts.values())
+        counts["test"] = n - used
+        if min(counts.values()) < 5:
+            raise RuntimeError(f"class {label} has too few examples for five-way split: n={n}, counts={counts}")
+        offset = 0
+        for key in ("train", "stage1", "stage2", "validation", "test"):
+            count = counts[key]
+            parts[key].extend(indices[offset:offset + count].tolist())
+            offset += count
+    return {key: np.asarray(sorted(value), dtype=np.int64) for key, value in parts.items()}
+
+
+def exact_mc(probs: np.ndarray, labels: np.ndarray) -> float:
+    n, k = probs.shape
+    best = 0.0
+    for class_index in range(k):
+        residual = (labels == class_index).astype(np.float64) - probs[:, class_index]
+        interval = exact_worst_intervals(
+            probs[:, class_index], residual[:, None], np.ones(n, dtype=bool), normalizer=n
+        )[0]
+        best = max(best, interval.score)
+    return float(best)
+

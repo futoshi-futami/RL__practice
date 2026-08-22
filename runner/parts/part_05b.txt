@@ -1,0 +1,62 @@
+    for seed in args.seeds:
+        split = split_indices(labels, seed)
+        split_manifest_rows = []
+        for split_name, indices in split.items():
+            for idx in indices:
+                split_manifest_rows.append({
+                    "seed": seed,
+                    "split": split_name,
+                    "row_index": int(idx),
+                    "class_index": int(labels[idx]),
+                    "scientific_name": str(manifest.loc[idx, "scientific_name"]),
+                    "observation_id": int(manifest.loc[idx, "observation_id"]),
+                })
+        pd.DataFrame(split_manifest_rows).to_csv(root / f"split_seed_{seed}.csv", index=False)
+
+        train_stats = {name: values[split["train"]] for name, values in all_stats.items()}
+        group_spec = make_group_spec(train_stats)
+        group_sets = {
+            split_name: group_masks({name: values[indices] for name, values in all_stats.items()}, group_spec)
+            for split_name, indices in split.items()
+        }
+        for base_name in base_models:
+            cell_start = time.time()
+            print(f"Seed {seed} base {base_name}", flush=True)
+            model = build_base_model(base_name, seed)
+            model.fit(features[split["train"]], labels[split["train"]])
+            base_probs = {
+                split_name: complete_probabilities(model, features[indices], tree.num_leaves)
+                for split_name, indices in split.items()
+            }
+            y = {split_name: labels[indices] for split_name, indices in split.items()}
+
+            temperature = fit_temperature(base_probs["stage1"], y["stage1"])
+            temperature_probs = {
+                split_name: transform_temperature(base_probs[split_name], temperature)
+                for split_name in ("stage2", "validation", "test")
+            }
+            dirichlet_state = fit_dirichlet(base_probs["stage1"], y["stage1"], seed)
+            dirichlet_probs = {
+                split_name: dirichlet_state.apply(base_probs[split_name])
+                for split_name in ("stage2", "validation", "test")
+            }
+
+            probability_outputs: Dict[str, np.ndarray] = {
+                "Raw": base_probs["test"],
+                "Temperature": temperature_probs["test"],
+                "Dirichlet": dirichlet_probs["test"],
+            }
+            parameter_rows.extend([
+                {"seed": seed, "base_model": base_name, "method": "Temperature", "temperature": temperature},
+                {"seed": seed, "base_model": base_name, "method": "Dirichlet", "C": 0.1},
+            ])
+
+            starts = {
+                "Raw": {
+                    "stage2": base_probs["stage2"],
+                    "validation": base_probs["validation"],
+                    "test": base_probs["test"],
+                },
+                "Temperature": temperature_probs,
+                "Dirichlet": dirichlet_probs,
+            }

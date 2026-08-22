@@ -1,0 +1,53 @@
+    report_lines = [
+        "# iNaturalist real-image postprocessing composition experiment\n",
+        "\n",
+        "This is a fresh real-image rerun obtained from public research-grade iNaturalist observations. ",
+        "It is not the earlier official iNaturalist-19 30-species split. The selected taxonomic design retains ",
+        "12 Amanita, 10 Lithobates, and 8 Enallagma species.\n\n",
+        "## Design\n\n",
+        f"- images: {len(manifest)} ({args.images_per_species} per species)\n",
+        f"- seeds: {args.seeds}\n",
+        "- base models: LR, GNB, DT, RF, XGB, MLP\n",
+        "- per-species split: 45% train, 15% first-stage calibration, 15% UC/C-HUC, 10% validation, 15% test\n",
+        "- compared: Raw; Temperature; Dirichlet; Raw/Temperature/Dirichlet followed by UC or C-HUC\n\n",
+        "## Summary\n\n",
+        summary[["method"] + [f"{m}_display" for m in ["MC", "UC", "C-UC", "HUC", "C-HUC", "Brier", "NLL", "Accuracy", "AUC"]]].to_markdown(index=False),
+        "\n\n## Selected paired effects\n\n",
+        comparisons[comparisons["metric"].isin(["UC", "C-HUC", "Brier", "NLL", "Accuracy", "AUC"])].to_markdown(index=False),
+        "\n",
+    ]
+    (root / "REPORT.md").write_text("".join(report_lines), encoding="utf-8")
+
+    # The raw images are not included in the artifact. The reproducible manifest and frozen features are retained.
+    shutil.rmtree(root / "data" / "images", ignore_errors=True)
+    (root / "STATUS.json").write_text(json.dumps({"status": "success", **validation}, ensure_ascii=False, indent=2), encoding="utf-8")
+    print("Experiment completed", json.dumps(validation, indent=2), flush=True)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--images-per-species", type=int, default=100)
+    parser.add_argument("--seeds", type=int, nargs="+", default=[20260819, 20260820, 20260821, 20260822, 20260823])
+    parser.add_argument("--max-rounds", type=int, default=100)
+    parser.add_argument("--patience", type=int, default=12)
+    parser.add_argument("--self-test-only", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    if args.self_test_only:
+        print(json.dumps(run_self_test(), indent=2))
+        return
+    try:
+        run_experiment(args)
+    except Exception as exc:
+        args.output.mkdir(parents=True, exist_ok=True)
+        (args.output / "STATUS.json").write_text(json.dumps({
+            "status": "failed",
+            "error": repr(exc),
+            "traceback": traceback.format_exc(),
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        raise
+

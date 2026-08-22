@@ -1,0 +1,112 @@
+name: ChatGPT complete iNaturalist HUC rerun
+
+on:
+  push:
+    branches:
+      - agent/inat-huc-complete-rerun
+    paths:
+      - 'chatgpt_tmp/**'
+      - '.github/workflows/chatgpt-inat-complete.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: '1'
+  OMP_NUM_THREADS: '2'
+  MKL_NUM_THREADS: '2'
+  OPENBLAS_NUM_THREADS: '2'
+  NUMEXPR_NUM_THREADS: '2'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/inat-huc-complete-rerun
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas scipy scikit-learn pillow requests xgboost tabulate matplotlib openpyxl
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - name: Assemble and self-test
+        run: |
+          cat chatgpt_tmp/part_*.txt > chatgpt_tmp/experiment.py
+          python -m py_compile chatgpt_tmp/experiment.py
+          python chatgpt_tmp/experiment.py --output outputs/self_test --self-test-only
+      - name: Run complete real-image comparison
+        id: experiment
+        continue-on-error: true
+        run: |
+          rm -rf outputs/inat_compositions
+          mkdir -p outputs/inat_compositions
+          python chatgpt_tmp/experiment.py \
+            --output outputs/inat_compositions \
+            --images-per-species 100 \
+            --seeds 20260819 20260820 20260821 20260822 20260823 \
+            --max-rounds 100 \
+            --patience 12 \
+            2>&1 | tee outputs/inat_compositions/console.log
+      - name: Validate complete table
+        id: validate
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+          r=Path('outputs/inat_compositions')
+          status=json.loads((r/'STATUS.json').read_text())
+          df=pd.read_csv(r/'results_all.csv')
+          core=['MC','UC','C-UC','HUC','C-HUC','Brier','NLL','Accuracy','AUC']
+          expected={'Raw','Temperature','Dirichlet','Raw→UC','Raw→C-HUC','Temperature→UC','Temperature→C-HUC','Dirichlet→UC','Dirichlet→C-HUC'}
+          assert status['status']=='success', status
+          assert len(df)==270, len(df)
+          assert set(df['method'])==expected, set(df['method'])
+          assert df['seed'].nunique()==5
+          assert df['base_model'].nunique()==6
+          assert int(df[core].isna().sum().sum())==0
+          summary=pd.read_csv(r/'summary.csv')
+          assert set(summary['method'])==expected
+          check={
+            'status':'success','rows':len(df),'methods':sorted(expected),
+            'seeds':sorted(df.seed.unique().tolist()),
+            'base_models':sorted(df.base_model.unique().tolist()),
+            'maximum_decomposition_error':float(df.decomposition_error.max()),
+            'maximum_probability_sum_error':float(df.probability_sum_error.max()),
+            'minimum_probability':float(df.minimum_probability.min()),
+          }
+          (r/'COMPLETE_TABLE_VALIDATION.json').write_text(json.dumps(check,ensure_ascii=False,indent=2))
+          PY
+      - name: Persist result tables on branch
+        if: always()
+        run: |
+          rm -rf chatgpt_results
+          mkdir -p chatgpt_results
+          for f in STATUS.json VALIDATION.json COMPLETE_TABLE_VALIDATION.json results_all.csv summary.csv paired_comparisons.csv summary_by_base_model.csv parameters_all.csv REPORT.md console.log SELF_TEST.json; do
+            if [ -f "outputs/inat_compositions/$f" ]; then cp "outputs/inat_compositions/$f" chatgpt_results/; fi
+          done
+          git config user.name 'chatgpt-experiment'
+          git config user.email 'actions@users.noreply.github.com'
+          git add chatgpt_results
+          if ! git diff --cached --quiet; then
+            git commit -m 'Store complete iNaturalist HUC rerun results'
+            git push origin HEAD:agent/inat-huc-complete-rerun
+          fi
+      - name: Upload all outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: complete-inat-huc-rerun
+          path: outputs/inat_compositions
+          retention-days: 30
+      - name: Fail on incomplete execution
+        if: steps.experiment.outcome != 'success' || steps.validate.outcome != 'success'
+        run: exit 1

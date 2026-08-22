@@ -1,0 +1,50 @@
+    spec = make_group_spec(stats)
+    groups = group_masks(stats, spec)
+    rules, history = fit_booster("UC", p[:40], y[:40], p[40:], y[40:], {k: v[:40] for k, v in groups.items()}, {k: v[40:] for k, v in groups.items()}, tree, max_rounds=3, patience=2)
+    return {
+        "tree_nodes": tree.num_nodes,
+        "max_decomposition_error": max(compute_utility_state(p, y, tree, r).decomposition_error for r in RANKS),
+        "interval_score": exact.score,
+        "projection_error": float(np.max(np.abs(projected.sum(axis=1) - 1))),
+        "booster_rules": len(rules),
+        "history_rows": len(history),
+    }
+
+
+def run_experiment(args: argparse.Namespace) -> None:
+    root = args.output.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "STATUS.json").write_text(json.dumps({"status": "running", "started_at": time.time()}, indent=2), encoding="utf-8")
+
+    self_test = run_self_test()
+    (root / "SELF_TEST.json").write_text(json.dumps(self_test, indent=2), encoding="utf-8")
+    print("Self-test passed", self_test, flush=True)
+
+    manifest, taxonomy_paths = acquire_real_images(root, args.images_per_species)
+    feature_data = extract_resnet18_features(root, manifest)
+    features = feature_data["features"].astype(np.float64)
+    labels = feature_data["labels"].astype(np.int64)
+    all_stats = {
+        "brightness": feature_data["brightness"].astype(np.float64),
+        "contrast": feature_data["contrast"].astype(np.float64),
+        "aspect": feature_data["aspect"].astype(np.float64),
+    }
+    tree = TaxonomyTree(taxonomy_paths)
+    (root / "data" / "taxonomy_tree.json").write_text(json.dumps(tree.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+
+    methods = [
+        "Raw",
+        "Temperature",
+        "Dirichlet",
+        "Raw→UC",
+        "Raw→C-HUC",
+        "Temperature→UC",
+        "Temperature→C-HUC",
+        "Dirichlet→UC",
+        "Dirichlet→C-HUC",
+    ]
+    base_models = ["LR", "GNB", "DT", "RF", "XGB", "MLP"]
+    rows: List[Dict[str, Any]] = []
+    parameter_rows: List[Dict[str, Any]] = []
+    total_start = time.time()
+

@@ -1,0 +1,52 @@
+def paired_comparisons(frame: pd.DataFrame) -> pd.DataFrame:
+    pairs = [
+        ("Raw", "Temperature"),
+        ("Raw", "Dirichlet"),
+        ("Raw", "Raw→UC"),
+        ("Raw", "Raw→C-HUC"),
+        ("Temperature", "Temperature→UC"),
+        ("Temperature", "Temperature→C-HUC"),
+        ("Dirichlet", "Dirichlet→UC"),
+        ("Dirichlet", "Dirichlet→C-HUC"),
+        ("Raw→UC", "Temperature→UC"),
+        ("Raw→UC", "Dirichlet→UC"),
+        ("Raw→C-HUC", "Temperature→C-HUC"),
+        ("Raw→C-HUC", "Dirichlet→C-HUC"),
+        ("Temperature→UC", "Temperature→C-HUC"),
+        ("Dirichlet→UC", "Dirichlet→C-HUC"),
+    ]
+    metrics = ["MC", "UC", "C-UC", "HUC", "C-HUC", "Brier", "NLL", "Accuracy", "AUC"]
+    index_columns = ["seed", "base_model"]
+    indexed = frame.set_index(index_columns + ["method"])
+    rows: List[Dict[str, Any]] = []
+    for reference, target in pairs:
+        for metric in metrics:
+            reference_series = indexed.xs(reference, level="method")[metric]
+            target_series = indexed.xs(target, level="method")[metric]
+            common = reference_series.index.intersection(target_series.index)
+            ref = reference_series.loc[common].to_numpy(dtype=float)
+            tar = target_series.loc[common].to_numpy(dtype=float)
+            delta = tar - ref
+            if metric in LOWER_IS_BETTER:
+                wins = int(np.sum(delta < -1e-12))
+                losses = int(np.sum(delta > 1e-12))
+            else:
+                wins = int(np.sum(delta > 1e-12))
+                losses = int(np.sum(delta < -1e-12))
+            ties = len(delta) - wins - losses
+            denom = float(np.mean(np.abs(ref)))
+            rows.append({
+                "reference": reference,
+                "target": target,
+                "metric": metric,
+                "n": len(delta),
+                "reference_mean": float(np.mean(ref)),
+                "target_mean": float(np.mean(tar)),
+                "mean_delta_target_minus_reference": float(np.mean(delta)),
+                "relative_change": float(np.mean(delta) / denom) if denom > 0 else float("nan"),
+                "wins": wins,
+                "ties": ties,
+                "losses": losses,
+            })
+    return pd.DataFrame(rows)
+

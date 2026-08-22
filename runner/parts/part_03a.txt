@@ -1,0 +1,79 @@
+        state = states[rank]
+        if method == "UC":
+            residual_matrix = state.residuals[:, None]
+            node_ids: List[Optional[int]] = [None]
+        elif method == "C-HUC":
+            residual_matrix = state.node_residuals
+            node_ids = list(tree.internal_nodes)
+        else:
+            raise ValueError(method)
+        for group in selected_groups:
+            interval_results = exact_worst_intervals(
+                state.scores, residual_matrix, groups[group], normalizer=len(labels)
+            )
+            for result, node_id in zip(interval_results, node_ids):
+                if result.support <= 0:
+                    continue
+                candidates.append(Candidate(
+                    score=result.score,
+                    signed_moment=result.signed_moment,
+                    utility_rank=rank,
+                    group=group,
+                    lower=result.lower,
+                    upper=result.upper,
+                    support=result.support,
+                    node_index=node_id,
+                ))
+    if not candidates:
+        raise RuntimeError("no candidate cell")
+    candidates.sort(key=candidate_sort_key)
+    return candidates[0], states
+
+
+def rule_cell(state: UtilityState, groups: Mapping[str, np.ndarray], rule: Rule, active: np.ndarray) -> np.ndarray:
+    # The audited cell is defined by group and score interval. Samples for which
+    # the selected node is not on the action path have a zero direction and zero
+    # node contribution, but remain members of the same audited cell.
+    return (
+        groups[rule.group]
+        & (state.scores >= rule.lower)
+        & (state.scores <= rule.upper)
+    )
+
+
+def apply_rule(
+    probs: np.ndarray,
+    groups: Mapping[str, np.ndarray],
+    tree: TaxonomyTree,
+    rule: Rule,
+) -> np.ndarray:
+    current = ensure_probabilities(probs)
+    placeholder = np.zeros(len(current), dtype=np.int64)
+    state = compute_utility_state(current, placeholder, tree, rule.utility_rank)
+    direction, active = rule_direction(state, tree, rule.node_index)
+    cell = rule_cell(state, groups, rule, active)
+    proposed = current.copy()
+    update_cell = cell & active
+    if np.any(update_cell):
+        proposed[update_cell] = project_simplex_rows(
+            current[update_cell] + rule.step * rule.sign * direction[update_cell]
+        )
+    return ensure_probabilities(proposed)
+
+
+def apply_rules(
+    probs: np.ndarray,
+    groups: Mapping[str, np.ndarray],
+    tree: TaxonomyTree,
+    rules: Sequence[Rule],
+) -> np.ndarray:
+    current = ensure_probabilities(probs)
+    for rule in rules:
+        current = apply_rule(current, groups, tree, rule)
+    return current
+
+
+def evaluate_target(method: str, probs: np.ndarray, labels: np.ndarray, groups: Mapping[str, np.ndarray], tree: TaxonomyTree) -> float:
+    candidate, _ = find_candidate(method, probs, labels, groups, tree)
+    return candidate.score
+

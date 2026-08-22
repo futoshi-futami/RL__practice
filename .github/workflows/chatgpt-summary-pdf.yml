@@ -1,0 +1,73 @@
+name: Render complete HUC result table PDF
+
+on:
+  push:
+    branches:
+      - agent/inat-huc-complete-rerun
+    paths:
+      - 'chatgpt_results/**'
+      - '.github/workflows/chatgpt-summary-pdf.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/inat-huc-complete-rerun
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Render summary if complete results exist
+        run: |
+          if [ ! -f chatgpt_results/summary.csv ]; then
+            echo 'summary.csv not present yet; nothing to render'
+            exit 0
+          fi
+          python -m pip install pandas matplotlib
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+          import matplotlib.pyplot as plt
+          from matplotlib.backends.backend_pdf import PdfPages
+
+          root=Path('chatgpt_results')
+          s=pd.read_csv(root/'summary.csv')
+          metrics=['MC','UC','C-UC','HUC','C-HUC','Brier','NLL','Accuracy','AUC']
+          display=pd.DataFrame({'Method':s['method']})
+          for m in metrics:
+              display[m]=[f'{a:.6f} ± {b:.6f}' for a,b in zip(s[f'{m}_mean'],s[f'{m}_std'])]
+          val={}
+          for name in ['COMPLETE_TABLE_VALIDATION.json','VALIDATION.json','STATUS.json']:
+              p=root/name
+              if p.exists():
+                  val[name]=json.loads(p.read_text())
+          with PdfPages(root/'COMPLETE_RESULT_TABLE.pdf') as pdf:
+              fig,ax=plt.subplots(figsize=(22,8.5))
+              ax.axis('off')
+              ax.set_title('Complete iNaturalist HUC rerun: mean ± sample SD over 5 seeds × 6 base learners',fontsize=16,pad=18)
+              tbl=ax.table(cellText=display.values,colLabels=display.columns,loc='center',cellLoc='center')
+              tbl.auto_set_font_size(False); tbl.set_fontsize(8); tbl.scale(1,1.65)
+              for (r,c),cell in tbl.get_celld().items():
+                  if r==0: cell.set_text_props(weight='bold')
+              pdf.savefig(fig,bbox_inches='tight'); plt.close(fig)
+
+              fig,ax=plt.subplots(figsize=(16,10))
+              ax.axis('off')
+              text='Validation\n\n'+json.dumps(val,indent=2,ensure_ascii=False)
+              ax.text(0.02,0.98,text,va='top',ha='left',family='monospace',fontsize=9)
+              pdf.savefig(fig,bbox_inches='tight'); plt.close(fig)
+          PY
+          git config user.name 'chatgpt-experiment'
+          git config user.email 'actions@users.noreply.github.com'
+          git add chatgpt_results/COMPLETE_RESULT_TABLE.pdf
+          if ! git diff --cached --quiet; then
+            git commit -m 'Render complete iNaturalist HUC result table PDF'
+            git push origin HEAD:agent/inat-huc-complete-rerun
+          fi
